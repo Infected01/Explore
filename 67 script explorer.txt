@@ -1,0 +1,871 @@
+-- // Script Explorer Pro v2.0 - Enhanced (Fix & UI Rework)
+-- // Full Game Scanner + Duplicate Filter + Compact Modern GUI
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Player = Players.LocalPlayer
+
+-- // Expanded Default Scripts Filter (Blocks ALL Roblox Defaults)
+local DefaultScripts = {
+    "Animate", "Health", "Sound", "ControlScript", "CameraScript",
+    "PlayerModule", "BootScreen", "Chat", "PlayerScriptsLoader",
+    "CharacterScripts", "RbxCharacterSounds", "VehicleSeat",
+    "Ragdoll", "Falling", "Jumping", "Climbing", "Swimming",
+    "GettingUp", "Floating", "Sliding", "Landed", "Bounce",
+    "Sit", "Tool", "Backpack", "GameSettings",
+    "StarterPack", "StarterGui", "StarterPlayer", 
+    "Camera", "Control", "Player", "Character", "Humanoid",
+    "BubbleChat", "ChatScript", "ClientChatModules", "ChatModules",
+    "Freecam", "RbxCamera", "RbxCharacterSounds"
+}
+
+local function IsDefaultScript(script)
+    local name = script.Name
+    local path = script:GetFullName()
+    
+    -- Block standard Roblox Core systems completely
+    if path:find("CorePackages") or path:find("RobloxGui") or path:find("RobloxPromptGui") or path:find("RobloxNetwork") or path:find("CoreScripts") then
+        return true
+    end
+    
+    -- Block standard default modules
+    if path:find("PlayerModule") or path:find("ChatModules") or path:find("ClientChatModules") or path:find("CameraScript") or path:find("ControlScript") then
+        return true
+    end
+
+    -- Check exact name against defaults
+    for _, defaultName in pairs(DefaultScripts) do
+        if name == defaultName then
+            return true
+        end
+    end
+    
+    -- Check for default Roblox generic scripts
+    if script.ClassName == "LocalScript" and 
+       (name == "LocalScript" or name == "Animate" or name == "Health") then
+        -- Only ignore if they are in typical default locations
+        if path:find("StarterCharacter") or path:find("StarterPlayer") or script.Parent:IsA("Character") then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- // Syntax Highlighter (Exact Dex Explorer Colors)
+local function HighlightLua(code)
+    -- Fix HTML characters
+    code = code:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    
+    -- Special tags
+    code = code:gsub('("[^"\n]*")', '※S※%1※E※')
+    code = code:gsub("('[^'\n]*')", '※S※%1※E※')
+    code = code:gsub("(%-%-[^\n]*)", '※C※%1※E※')
+    
+    -- Numbers (Sadece bağımsız sayılar, değişken içindekiler hariç)
+    code = code:gsub("%f[%w_](%d+%.?%d*)%f[^%w_]", '※N※%1※E※')
+    
+    -- Keyword Lists (Imported from Dex table)
+    local lua_keywords = {"and", "break", "or", "else", "elseif", "if", "then", "until", "repeat", "while", "do", "for", "in", "end", "return", "export", "not"}
+    local rbx_keywords = {"game", "workspace", "script", "math", "string", "table", "task", "wait", "select", "next", "Enum", "error", "warn", "tick", "assert", "shared", "loadstring", "tonumber", "tostring", "type", "typeof", "unpack", "print", "Instance", "CFrame", "Vector3", "Vector2", "Color3", "UDim", "UDim2", "Ray", "BrickColor", "OverlapParams", "RaycastParams", "Axes", "Random", "Region3", "Rect", "TweenInfo", "collectgarbage", "utf8", "pcall", "xpcall", "_G", "setmetatable", "getmetatable", "os", "pairs", "ipairs"}
+    local loc_func = {"local", "function", "self"}
+    local bool_nil = {"true", "false", "nil"}
+    
+    -- Matching (Sınırları daraltıldı, değişken isimleri içindeki kelimeleri renklendirmez)
+    for _, kw in pairs(lua_keywords) do code = code:gsub("%f[%w_]("..kw..")%f[^%w_]", '※L※%1※E※') end
+    for _, kw in pairs(rbx_keywords) do code = code:gsub("%f[%w_]("..kw..")%f[^%w_]", '※R※%1※E※') end
+    for _, kw in pairs(loc_func) do code = code:gsub("%f[%w_]("..kw..")%f[^%w_]", '※F※%1※E※') end
+    for _, kw in pairs(bool_nil) do code = code:gsub("%f[%w_]("..kw..")%f[^%w_]", '※N※%1※E※') end
+    
+    -- Dex HEX Color Conversions
+    code = code:gsub("※S※", '<font color="#ADF184">') -- String (Light Green)
+    code = code:gsub("※C※", '<font color="#666666">') -- Comment (Gray)
+    code = code:gsub("※N※", '<font color="#FFC600">') -- Number/Bool/Nil (Yellow/Orange)
+    code = code:gsub("※L※", '<font color="#F86D7C">') -- Lua Keywords (if, then, end - Light Red)
+    code = code:gsub("※R※", '<font color="#84D6F7">') -- Built-in (game, workspace - Light Blue)
+    code = code:gsub("※F※", '<font color="#F86D73">') -- Local/Function (Pinkish Red)
+    code = code:gsub("※E※", '</font>')
+    
+    return code
+end
+
+local function Decompile(script)
+    local source = nil
+    local executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or "Your executor"
+    
+    -- Try to get source for client-accessible scripts
+    if script:IsA("LocalScript") or script:IsA("ModuleScript") then
+        -- 1. Try exploit decompile function first (Krnl, Synapse, Fluxus, etc.)
+        if type(decompile) == "function" then
+            pcall(function()
+                source = decompile(script)
+            end)
+        end
+        
+        -- 2. Fallback to script.Source if decompile fails or isn't available
+        if not source or source == "" then
+            pcall(function()
+                source = script.Source
+            end)
+        end
+        
+        if source and source ~= "" then
+            return "-- Script Path: " .. script:GetFullName() .. "\n\n" .. source
+        else
+            -- Exact Dex Explorer Error Message
+            return ("-- DEX - %s failed to decompile %s"):format(executor, script.ClassName)
+        end
+    end
+    
+    return ("-- DEX - %s failed to decompile %s (Server Script / Inaccessible)"):format(executor, script.ClassName)
+end
+
+-- // Helper to add Strokes
+local function AddStroke(parent, color)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = 1
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = parent
+    return stroke
+end
+
+-- // Helper to Extract Exact Dex Icons (NewDark scheme)
+local function SetDexIcon(obj, className)
+    obj.Image = "rbxassetid://135148380892747"
+    
+    local icons = {
+        LocalScript = 144,
+        ModuleScript = 155,
+        Script = 197
+    }
+    local index = (icons[className] or 197) - 1
+    local iconSize = 32
+    local height = 18
+    
+    local col = math.floor(index % height)
+    local row = math.floor(index / height)
+    
+    local xOffset = col * iconSize
+    local yOffset = row * iconSize
+    
+    obj.ImageRectOffset = Vector2.new(xOffset, yOffset)
+    obj.ImageRectSize = Vector2.new(iconSize, iconSize)
+end
+
+-- // State for Filter
+local Filters = {
+    Script = true,
+    LocalScript = true,
+    ModuleScript = true
+}
+
+-- // Variable to store 100% untouched decompiled script for copying
+local CurrentDecompiledScript = ""
+
+-- // Compact GUI Creation (Modernized)
+local function CreateGUI()
+    -- Main Container
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "ScriptExplorerProV2"
+    ScreenGui.Parent = CoreGui
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.DisplayOrder = 999
+    ScreenGui.ResetOnSpawn = false
+    
+    -- Main Frame - Compact & Modern
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 320, 0, 360)
+    MainFrame.Position = UDim2.new(1, -330, 0.5, -180)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+    MainFrame.Active = true
+    MainFrame.Draggable = true
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = MainFrame
+    AddStroke(MainFrame, Color3.fromRGB(45, 45, 55))
+    
+    -- Title Bar
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Name = "TitleBar"
+    TitleBar.Size = UDim2.new(1, 0, 0, 35)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(23, 23, 30)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = MainFrame
+    
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 8)
+    TitleCorner.Parent = TitleBar
+    
+    local TitleLine = Instance.new("Frame")
+    TitleLine.Size = UDim2.new(1, 0, 0, 1)
+    TitleLine.Position = UDim2.new(0, 0, 1, 0)
+    TitleLine.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    TitleLine.BorderSizePixel = 0
+    TitleLine.Parent = TitleBar
+    
+    -- Title Text
+    local Title = Instance.new("TextLabel")
+    Title.Name = "Title"
+    Title.Size = UDim2.new(1, -120, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "🔍 Script Explorer"
+    Title.TextColor3 = Color3.fromRGB(240, 240, 245)
+    Title.Font = Enum.Font.GothamSemibold
+    Title.TextSize = 13
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+    
+    -- Modern Control Buttons (IDE Style)
+    local WindowControls = Instance.new("Frame")
+    WindowControls.Name = "WindowControls"
+    WindowControls.Size = UDim2.new(0, 90, 1, 0)
+    WindowControls.Position = UDim2.new(1, -90, 0, 0)
+    WindowControls.BackgroundTransparency = 1
+    WindowControls.Parent = TitleBar
+    
+    -- Filter Button (▼)
+    local FilterButton = Instance.new("TextButton")
+    FilterButton.Name = "FilterButton"
+    FilterButton.Size = UDim2.new(0, 30, 1, 0)
+    FilterButton.Position = UDim2.new(0, 0, 0, 0)
+    FilterButton.BackgroundTransparency = 1
+    FilterButton.Text = "▼"
+    FilterButton.TextColor3 = Color3.fromRGB(150, 150, 160)
+    FilterButton.Font = Enum.Font.GothamBold
+    FilterButton.TextSize = 12
+    FilterButton.Parent = WindowControls
+
+    -- Minimize Button
+    local MinimizeButton = Instance.new("TextButton")
+    MinimizeButton.Name = "MinimizeButton"
+    MinimizeButton.Size = UDim2.new(0, 30, 1, 0)
+    MinimizeButton.Position = UDim2.new(0, 30, 0, 0)
+    MinimizeButton.BackgroundTransparency = 1
+    MinimizeButton.Text = "—"
+    MinimizeButton.TextColor3 = Color3.fromRGB(150, 150, 160)
+    MinimizeButton.Font = Enum.Font.GothamBold
+    MinimizeButton.TextSize = 14
+    MinimizeButton.Parent = WindowControls
+    
+    -- Close Button
+    local CloseButton = Instance.new("TextButton")
+    CloseButton.Name = "CloseButton"
+    CloseButton.Size = UDim2.new(0, 30, 1, 0)
+    CloseButton.Position = UDim2.new(0, 60, 0, 0)
+    CloseButton.BackgroundTransparency = 1
+    CloseButton.Text = "✕"
+    CloseButton.TextColor3 = Color3.fromRGB(150, 150, 160)
+    CloseButton.Font = Enum.Font.GothamBold
+    CloseButton.TextSize = 14
+    CloseButton.Parent = WindowControls
+
+    -- Hover Effects for Controls
+    FilterButton.MouseEnter:Connect(function() FilterButton.TextColor3 = Color3.fromRGB(255, 255, 255) end)
+    FilterButton.MouseLeave:Connect(function() FilterButton.TextColor3 = Color3.fromRGB(150, 150, 160) end)
+    MinimizeButton.MouseEnter:Connect(function() MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255) end)
+    MinimizeButton.MouseLeave:Connect(function() MinimizeButton.TextColor3 = Color3.fromRGB(150, 150, 160) end)
+    CloseButton.MouseEnter:Connect(function() CloseButton.TextColor3 = Color3.fromRGB(255, 85, 85) end)
+    CloseButton.MouseLeave:Connect(function() CloseButton.TextColor3 = Color3.fromRGB(150, 150, 160) end)
+    
+    -- Search Box
+    local SearchBox = Instance.new("Frame")
+    SearchBox.Name = "SearchBox"
+    SearchBox.Size = UDim2.new(1, -20, 0, 30)
+    SearchBox.Position = UDim2.new(0, 10, 0, 45)
+    SearchBox.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+    SearchBox.BorderSizePixel = 0
+    SearchBox.Parent = MainFrame
+    
+    local SearchCorner = Instance.new("UICorner")
+    SearchCorner.CornerRadius = UDim.new(0, 6)
+    SearchCorner.Parent = SearchBox
+    AddStroke(SearchBox, Color3.fromRGB(50, 50, 65))
+    
+    local SearchInput = Instance.new("TextBox")
+    SearchInput.Name = "SearchInput"
+    SearchInput.Size = UDim2.new(1, -35, 1, 0)
+    SearchInput.Position = UDim2.new(0, 30, 0, 0)
+    SearchInput.BackgroundTransparency = 1
+    SearchInput.PlaceholderText = "Search scripts..."
+    SearchInput.Text = ""
+    SearchInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+    SearchInput.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    SearchInput.Font = Enum.Font.Gotham
+    SearchInput.TextSize = 12
+    SearchInput.TextXAlignment = Enum.TextXAlignment.Left
+    SearchInput.Parent = SearchBox
+    
+    local SearchIcon = Instance.new("TextLabel")
+    SearchIcon.Name = "SearchIcon"
+    SearchIcon.Size = UDim2.new(0, 30, 1, 0)
+    SearchIcon.BackgroundTransparency = 1
+    SearchIcon.Text = "🔍"
+    SearchIcon.TextColor3 = Color3.fromRGB(150, 150, 160)
+    SearchIcon.TextSize = 12
+    SearchIcon.Parent = SearchBox
+    
+    -- Refresh Button
+    local RefreshButton = Instance.new("TextButton")
+    RefreshButton.Name = "RefreshButton"
+    RefreshButton.Size = UDim2.new(1, -20, 0, 28)
+    RefreshButton.Position = UDim2.new(0, 10, 0, 82)
+    RefreshButton.BackgroundColor3 = Color3.fromRGB(99, 102, 241)
+    RefreshButton.Text = "🔄 Refresh Scripts"
+    RefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    RefreshButton.Font = Enum.Font.GothamBold
+    RefreshButton.TextSize = 12
+    RefreshButton.BorderSizePixel = 0
+    RefreshButton.Parent = MainFrame
+    
+    local RefreshCorner = Instance.new("UICorner")
+    RefreshCorner.CornerRadius = UDim.new(0, 6)
+    RefreshCorner.Parent = RefreshButton
+    
+    -- Script Count Label
+    local ScriptCount = Instance.new("TextLabel")
+    ScriptCount.Name = "ScriptCount"
+    ScriptCount.Size = UDim2.new(1, -20, 0, 15)
+    ScriptCount.Position = UDim2.new(0, 10, 0, 115)
+    ScriptCount.BackgroundTransparency = 1
+    ScriptCount.Text = "Scripts: 0"
+    ScriptCount.TextColor3 = Color3.fromRGB(130, 130, 140)
+    ScriptCount.Font = Enum.Font.GothamMedium
+    ScriptCount.TextSize = 11
+    ScriptCount.TextXAlignment = Enum.TextXAlignment.Left
+    ScriptCount.Parent = MainFrame
+    
+    -- Script List Container
+    local ListContainer = Instance.new("Frame")
+    ListContainer.Name = "ListContainer"
+    ListContainer.Size = UDim2.new(1, -20, 1, -145)
+    ListContainer.Position = UDim2.new(0, 10, 0, 135)
+    ListContainer.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+    ListContainer.BorderSizePixel = 0
+    ListContainer.Parent = MainFrame
+    
+    local ListCorner = Instance.new("UICorner")
+    ListCorner.CornerRadius = UDim.new(0, 6)
+    ListCorner.Parent = ListContainer
+    AddStroke(ListContainer, Color3.fromRGB(45, 45, 55))
+    
+    -- Script List
+    local ScriptList = Instance.new("ScrollingFrame")
+    ScriptList.Name = "ScriptList"
+    ScriptList.Size = UDim2.new(1, -8, 1, -8)
+    ScriptList.Position = UDim2.new(0, 4, 0, 4)
+    ScriptList.BackgroundTransparency = 1
+    ScriptList.BorderSizePixel = 0
+    ScriptList.ScrollBarThickness = 2
+    ScriptList.ScrollBarImageColor3 = Color3.fromRGB(99, 102, 241)
+    ScriptList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScriptList.Parent = ListContainer
+    
+    local UIListLayout = Instance.new("UIListLayout")
+    UIListLayout.Padding = UDim.new(0, 4)
+    UIListLayout.SortOrder = Enum.SortOrder.Name
+    UIListLayout.Parent = ScriptList
+    
+    -- // Filter Panel (Replaces InfoPanel)
+    local FilterPanel = Instance.new("Frame")
+    FilterPanel.Name = "FilterPanel"
+    FilterPanel.Size = UDim2.new(1, -20, 0, 110)
+    FilterPanel.Position = UDim2.new(0, 10, 0, 40)
+    FilterPanel.BackgroundColor3 = Color3.fromRGB(23, 23, 30)
+    FilterPanel.ZIndex = 10
+    FilterPanel.Visible = false
+    FilterPanel.Parent = MainFrame
+    
+    local FilterCorner = Instance.new("UICorner")
+    FilterCorner.CornerRadius = UDim.new(0, 6)
+    FilterCorner.Parent = FilterPanel
+    AddStroke(FilterPanel, Color3.fromRGB(50, 50, 65))
+    
+    local FilterTitle = Instance.new("TextLabel")
+    FilterTitle.Size = UDim2.new(1, 0, 0, 25)
+    FilterTitle.Position = UDim2.new(0, 10, 0, 5)
+    FilterTitle.BackgroundTransparency = 1
+    FilterTitle.Text = "Filter Scripts"
+    FilterTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    FilterTitle.Font = Enum.Font.GothamBold
+    FilterTitle.TextSize = 12
+    FilterTitle.TextXAlignment = Enum.TextXAlignment.Left
+    FilterTitle.ZIndex = 10
+    FilterTitle.Parent = FilterPanel
+    
+    local function RefreshList() end -- Setup forward declaration
+    
+    local function CreateFilterRow(yPos, className, text)
+        local row = Instance.new("TextButton")
+        row.BackgroundTransparency = 1
+        row.Size = UDim2.new(1, -20, 0, 20)
+        row.Position = UDim2.new(0, 10, 0, yPos)
+        row.ZIndex = 10
+        row.Text = ""
+        row.Parent = FilterPanel
+        
+        local icon = Instance.new("ImageLabel")
+        icon.BackgroundTransparency = 1
+        icon.Size = UDim2.new(0, 16, 0, 16)
+        icon.Position = UDim2.new(0, 0, 0.5, -8)
+        SetDexIcon(icon, className)
+        icon.ZIndex = 10
+        icon.Parent = row
+        
+        local lbl = Instance.new("TextLabel")
+        lbl.BackgroundTransparency = 1
+        lbl.Size = UDim2.new(1, -50, 1, 0)
+        lbl.Position = UDim2.new(0, 25, 0, 0)
+        lbl.Text = text
+        lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 11
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.ZIndex = 10
+        lbl.Parent = row
+        
+        local check = Instance.new("TextLabel")
+        check.BackgroundTransparency = 1
+        check.Size = UDim2.new(0, 20, 1, 0)
+        check.Position = UDim2.new(1, -20, 0, 0)
+        check.Text = "✅"
+        check.TextColor3 = Color3.fromRGB(100, 255, 100)
+        check.Font = Enum.Font.GothamBold
+        check.TextSize = 11
+        check.ZIndex = 10
+        check.Parent = row
+        
+        row.MouseButton1Click:Connect(function()
+            Filters[className] = not Filters[className]
+            if Filters[className] then
+                check.Text = "✅"
+                check.TextColor3 = Color3.fromRGB(100, 255, 100)
+            else
+                check.Text = "❌"
+                check.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
+            RefreshList()
+        end)
+    end
+    
+    CreateFilterRow(30, "Script", "Server Script")
+    CreateFilterRow(55, "LocalScript", "Local Script")
+    CreateFilterRow(80, "ModuleScript", "Module Script")
+    
+    -- // Decompile Panel - Expanded (500px) & On the Left
+    local DecompilePanel = Instance.new("Frame")
+    DecompilePanel.Name = "DecompilePanel"
+    DecompilePanel.Size = UDim2.new(0, 500, 0, 380) 
+    DecompilePanel.Position = UDim2.new(0, -550, 0.5, -190)
+    DecompilePanel.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
+    DecompilePanel.BorderSizePixel = 0
+    DecompilePanel.Visible = false
+    DecompilePanel.ZIndex = 2
+    DecompilePanel.Parent = ScreenGui
+    DecompilePanel.Active = true
+    DecompilePanel.Draggable = true
+    
+    local DecompileCorner = Instance.new("UICorner")
+    DecompileCorner.CornerRadius = UDim.new(0, 8)
+    DecompileCorner.Parent = DecompilePanel
+    AddStroke(DecompilePanel, Color3.fromRGB(45, 45, 55))
+    
+    -- Decompile Title Bar
+    local DecompileTitleBar = Instance.new("Frame")
+    DecompileTitleBar.Name = "DecompileTitleBar"
+    DecompileTitleBar.Size = UDim2.new(1, 0, 0, 35)
+    DecompileTitleBar.BackgroundColor3 = Color3.fromRGB(23, 23, 30)
+    DecompileTitleBar.BorderSizePixel = 0
+    DecompileTitleBar.Parent = DecompilePanel
+    
+    local DecompileTitleCorner = Instance.new("UICorner")
+    DecompileTitleCorner.CornerRadius = UDim.new(0, 8)
+    DecompileTitleCorner.Parent = DecompileTitleBar
+    
+    local DecompileTitleLine = Instance.new("Frame")
+    DecompileTitleLine.Size = UDim2.new(1, 0, 0, 1)
+    DecompileTitleLine.Position = UDim2.new(0, 0, 1, 0)
+    DecompileTitleLine.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    DecompileTitleLine.BorderSizePixel = 0
+    DecompileTitleLine.Parent = DecompileTitleBar
+    
+    local DecompileTitle = Instance.new("TextLabel")
+    DecompileTitle.Name = "DecompileTitle"
+    DecompileTitle.Size = UDim2.new(1, -100, 1, 0)
+    DecompileTitle.Position = UDim2.new(0, 12, 0, 0)
+    DecompileTitle.BackgroundTransparency = 1
+    DecompileTitle.Text = "📄 Decompiled Script"
+    DecompileTitle.TextColor3 = Color3.fromRGB(240, 240, 245)
+    DecompileTitle.Font = Enum.Font.GothamSemibold
+    DecompileTitle.TextSize = 13
+    DecompileTitle.TextXAlignment = Enum.TextXAlignment.Left
+    DecompileTitle.Parent = DecompileTitleBar
+    
+    -- Copy Button
+    local CopyButton = Instance.new("TextButton")
+    CopyButton.Name = "CopyButton"
+    CopyButton.Size = UDim2.new(0, 32, 0, 26)
+    CopyButton.Position = UDim2.new(1, -62, 0, 4)
+    CopyButton.BackgroundColor3 = Color3.fromRGB(99, 102, 241)
+    CopyButton.Text = "📋"
+    CopyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CopyButton.Font = Enum.Font.GothamBold
+    CopyButton.TextSize = 14
+    CopyButton.BorderSizePixel = 0
+    CopyButton.Parent = DecompileTitleBar
+    
+    local CopyCorner = Instance.new("UICorner")
+    CopyCorner.CornerRadius = UDim.new(0, 5)
+    CopyCorner.Parent = CopyButton
+    
+    -- Decompile Close Button (IDE Style)
+    local DecompileCloseButton = Instance.new("TextButton")
+    DecompileCloseButton.Name = "DecompileCloseButton"
+    DecompileCloseButton.Size = UDim2.new(0, 30, 1, 0)
+    DecompileCloseButton.Position = UDim2.new(1, -30, 0, 0)
+    DecompileCloseButton.BackgroundTransparency = 1
+    DecompileCloseButton.Text = "✕"
+    DecompileCloseButton.TextColor3 = Color3.fromRGB(150, 150, 160)
+    DecompileCloseButton.Font = Enum.Font.GothamBold
+    DecompileCloseButton.TextSize = 14
+    DecompileCloseButton.Parent = DecompileTitleBar
+
+    DecompileCloseButton.MouseEnter:Connect(function() DecompileCloseButton.TextColor3 = Color3.fromRGB(255, 85, 85) end)
+    DecompileCloseButton.MouseLeave:Connect(function() DecompileCloseButton.TextColor3 = Color3.fromRGB(150, 150, 160) end)
+    
+    -- Code Display Container
+    local CodeContainer = Instance.new("Frame")
+    CodeContainer.Name = "CodeContainer"
+    CodeContainer.Size = UDim2.new(1, -20, 1, -55)
+    CodeContainer.Position = UDim2.new(0, 10, 0, 45)
+    CodeContainer.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+    CodeContainer.BorderSizePixel = 0
+    CodeContainer.Parent = DecompilePanel
+    
+    local CodeCorner = Instance.new("UICorner")
+    CodeCorner.CornerRadius = UDim.new(0, 6)
+    CodeCorner.Parent = CodeContainer
+    AddStroke(CodeContainer, Color3.fromRGB(45, 45, 55))
+    
+    local CodeDisplay = Instance.new("ScrollingFrame")
+    CodeDisplay.Name = "CodeDisplay"
+    CodeDisplay.Size = UDim2.new(1, -12, 1, -12)
+    CodeDisplay.Position = UDim2.new(0, 6, 0, 6)
+    CodeDisplay.BackgroundTransparency = 1
+    CodeDisplay.BorderSizePixel = 0
+    CodeDisplay.ScrollBarThickness = 4
+    CodeDisplay.ScrollBarImageColor3 = Color3.fromRGB(99, 102, 241)
+    CodeDisplay.AutomaticCanvasSize = Enum.AutomaticSize.XY
+    CodeDisplay.CanvasSize = UDim2.new(0, 0, 0, 0)
+    CodeDisplay.Parent = CodeContainer
+
+    -- Layout specifically for Code Chunks allowing smooth multi-line loading
+    local CodeLayout = Instance.new("UIListLayout")
+    CodeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    CodeLayout.Padding = UDim.new(0, 0)
+    CodeLayout.Parent = CodeDisplay
+    
+    -- // Functions
+    local function ClearScriptList()
+        for _, child in pairs(ScriptList:GetChildren()) do
+            if child:IsA("TextButton") or child:IsA("TextLabel") then
+                child:Destroy()
+            end
+        end
+    end
+    
+    local function AddScriptButton(script, count)
+        local Button = Instance.new("TextButton")
+        Button.Size = UDim2.new(1, -4, 0, 28)
+        Button.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+        Button.TextColor3 = Color3.fromRGB(220, 220, 230)
+        Button.Font = Enum.Font.GothamMedium
+        Button.TextSize = 11
+        Button.TextXAlignment = Enum.TextXAlignment.Left
+        Button.BorderSizePixel = 0
+        Button.Parent = ScriptList
+        
+        local Corner = Instance.new("UICorner")
+        Corner.CornerRadius = UDim.new(0, 4)
+        Corner.Parent = Button
+        
+        local Padding = Instance.new("UIPadding")
+        Padding.PaddingLeft = UDim.new(0, 32) -- Push text to the right for the icon
+        Padding.Parent = Button
+        
+        -- Decals (Dex Original Icons extracted mathematically)
+        local IconLabel = Instance.new("ImageLabel")
+        IconLabel.BackgroundTransparency = 1
+        IconLabel.Position = UDim2.new(0, -24, 0.5, -8) 
+        IconLabel.Size = UDim2.new(0, 16, 0, 16)
+        
+        SetDexIcon(IconLabel, script.ClassName)
+        IconLabel.Parent = Button
+        
+        -- Show count if multiple
+        local countText = ""
+        if count and count > 1 then
+            countText = " [" .. count .. "x]"
+        end
+        
+        Button.Text = script.Name .. countText
+        
+        -- Copy Path Button
+        local CopyPathBtn = Instance.new("TextButton")
+        CopyPathBtn.Size = UDim2.new(0, 22, 0, 22)
+        CopyPathBtn.Position = UDim2.new(1, -26, 0.5, -11)
+        CopyPathBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        CopyPathBtn.Text = "🔗"
+        CopyPathBtn.TextColor3 = Color3.fromRGB(220, 220, 230)
+        CopyPathBtn.Font = Enum.Font.Gotham
+        CopyPathBtn.TextSize = 12
+        CopyPathBtn.BorderSizePixel = 0
+        CopyPathBtn.Parent = Button
+        
+        local PathCorner = Instance.new("UICorner")
+        PathCorner.CornerRadius = UDim.new(0, 4)
+        PathCorner.Parent = CopyPathBtn
+        
+        CopyPathBtn.MouseEnter:Connect(function()
+            CopyPathBtn.BackgroundColor3 = Color3.fromRGB(65, 65, 75)
+        end)
+        
+        CopyPathBtn.MouseLeave:Connect(function()
+            CopyPathBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        end)
+        
+        CopyPathBtn.MouseButton1Click:Connect(function()
+            pcall(function()
+                setclipboard(script:GetFullName())
+            end)
+            CopyPathBtn.Text = "✅"
+            coroutine.wrap(function()
+                task.wait(1)
+                if CopyPathBtn then
+                    CopyPathBtn.Text = "🔗"
+                end
+            end)()
+        end)
+        
+        Button.MouseEnter:Connect(function()
+            Button.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+        end)
+        
+        Button.MouseLeave:Connect(function()
+            Button.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+        end)
+        
+        Button.MouseButton1Click:Connect(function()
+            local rawDecompiled = Decompile(script)
+            CurrentDecompiledScript = rawDecompiled -- Store exactly what is returned for copy functionality
+            
+            -- Fix Long Text & Color cutoff by using chunks
+            for _, child in pairs(CodeDisplay:GetChildren()) do
+                if child:IsA("TextLabel") then
+                    child:Destroy()
+                end
+            end
+            
+            local safeCode = rawDecompiled:gsub("\r", "")
+            local lines = string.split(safeCode, "\n")
+            local chunkSize = 50
+            for i = 1, #lines, chunkSize do
+                local chunk = {}
+                for j = 0, chunkSize - 1 do
+                    if lines[i + j] then
+                        table.insert(chunk, lines[i + j])
+                    end
+                end
+                local chunkText = table.concat(chunk, "\n")
+                
+                local lbl = Instance.new("TextLabel")
+                lbl.Name = "CodeChunk_" .. i
+                lbl.Size = UDim2.new(0, 0, 0, 0)
+                lbl.BackgroundTransparency = 1
+                if #chunkText > 20000 then -- Prevent rich text crashing on massively minified single lines
+                    lbl.Text = chunkText:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+                else
+                    lbl.Text = HighlightLua(chunkText)
+                end
+                lbl.TextColor3 = Color3.fromRGB(204, 204, 204)
+                lbl.Font = Enum.Font.Code
+                lbl.TextSize = 13 
+                lbl.TextXAlignment = Enum.TextXAlignment.Left
+                lbl.TextYAlignment = Enum.TextYAlignment.Top
+                lbl.TextWrapped = false 
+                lbl.RichText = true
+                lbl.AutomaticSize = Enum.AutomaticSize.XY
+                lbl.LayoutOrder = i
+                lbl.Parent = CodeDisplay
+            end
+
+            DecompilePanel.Visible = true
+            DecompilePanel.Position = UDim2.new(0, -550, 0.5, -190)
+            local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+            local tween = TweenService:Create(DecompilePanel, tweenInfo, {Position = UDim2.new(0, 20, 0.5, -190)})
+            tween:Play()
+        end)
+    end
+    
+    function RefreshList()
+        ClearScriptList()
+        local searchText = SearchInput.Text:lower()
+        
+        local scriptsFound = {}
+        local scriptCounts = {}
+        
+        local locations = {
+            game:GetService("Workspace"),
+            game:GetService("ReplicatedStorage"),
+            game:GetService("ServerScriptService"),
+            game:GetService("ServerStorage"),
+            game:GetService("StarterGui"),
+            game:GetService("StarterPack"),
+            game:GetService("StarterPlayer"),
+            game:GetService("CoreGui"),
+            game:GetService("Lighting"),
+            game:GetService("SoundService"),
+            game:GetService("Teams"),
+            game:GetService("ReplicatedFirst"),
+            game:GetService("Chat")
+        }
+        
+        if Player:FindFirstChild("PlayerGui") then
+            locations[#locations + 1] = Player.PlayerGui
+        end
+        if Player:FindFirstChild("PlayerScripts") then
+            locations[#locations + 1] = Player.PlayerScripts
+        end
+        
+        for _, location in pairs(locations) do
+            pcall(function()
+                for _, obj in pairs(location:GetDescendants()) do
+                    local isScript = false
+                    if obj.ClassName == "Script" and Filters.Script then isScript = true end
+                    if obj.ClassName == "LocalScript" and Filters.LocalScript then isScript = true end
+                    if obj.ClassName == "ModuleScript" and Filters.ModuleScript then isScript = true end
+                    
+                    if isScript and not IsDefaultScript(obj) then
+                        local scriptName = obj.Name
+                        if searchText == "" or scriptName:lower():find(searchText) then
+                            if not scriptCounts[scriptName] then
+                                scriptCounts[scriptName] = { count = 0, script = obj }
+                            end
+                            scriptCounts[scriptName].count += 1
+                            table.insert(scriptsFound, obj)
+                        end
+                    end
+                end
+            end)
+        end
+        
+        local uniqueScripts = {}
+        for name, data in pairs(scriptCounts) do
+            data.name = name
+            table.insert(uniqueScripts, data)
+        end
+        
+        table.sort(uniqueScripts, function(a, b)
+            return a.name < b.name
+        end)
+        
+        for _, data in pairs(uniqueScripts) do
+            AddScriptButton(data.script, data.count)
+        end
+        
+        local totalHeight = #uniqueScripts * 32
+        ScriptList.CanvasSize = UDim2.new(0, 0, 0, totalHeight)
+        ScriptCount.Text = "Scripts: " .. #uniqueScripts .. " unique (" .. #scriptsFound .. " total)"
+        
+        if #uniqueScripts == 0 then
+            local NoScripts = Instance.new("TextLabel")
+            NoScripts.Size = UDim2.new(1, -6, 0, 30)
+            NoScripts.Position = UDim2.new(0, 3, 0, 5)
+            NoScripts.BackgroundTransparency = 1
+            NoScripts.Text = "No custom scripts found"
+            NoScripts.TextColor3 = Color3.fromRGB(150, 150, 150)
+            NoScripts.Font = Enum.Font.Gotham
+            NoScripts.TextSize = 11
+            NoScripts.Parent = ScriptList
+        end
+    end
+    
+    -- // Button Events
+    CloseButton.MouseButton1Click:Connect(function()
+        ScreenGui:Destroy()
+    end)
+    
+    FilterButton.MouseButton1Click:Connect(function()
+        FilterPanel.Visible = not FilterPanel.Visible
+    end)
+    
+    MinimizeButton.MouseButton1Click:Connect(function()
+        if MainFrame.Visible then
+            MainFrame.Visible = false
+            
+            local RestoreButton = Instance.new("TextButton")
+            RestoreButton.Name = "RestoreButton"
+            RestoreButton.Size = UDim2.new(0, 40, 0, 40)
+            RestoreButton.Position = UDim2.new(1, -50, 0.5, -20)
+            RestoreButton.BackgroundColor3 = Color3.fromRGB(17, 17, 23)
+            RestoreButton.Text = "🔍"
+            RestoreButton.TextColor3 = Color3.fromRGB(240, 240, 245)
+            RestoreButton.Font = Enum.Font.GothamBold
+            RestoreButton.TextSize = 18
+            RestoreButton.BorderSizePixel = 0
+            RestoreButton.Parent = ScreenGui
+            
+            local RestoreCorner = Instance.new("UICorner")
+            RestoreCorner.CornerRadius = UDim.new(0, 8)
+            RestoreCorner.Parent = RestoreButton
+            AddStroke(RestoreButton, Color3.fromRGB(99, 102, 241))
+            
+            RestoreButton.MouseButton1Click:Connect(function()
+                MainFrame.Visible = true
+                RestoreButton:Destroy()
+            end)
+        end
+    end)
+    
+    DecompileCloseButton.MouseButton1Click:Connect(function()
+        local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+        local tween = TweenService:Create(DecompilePanel, tweenInfo, {Position = UDim2.new(0, -550, 0.5, -190)})
+        tween:Play()
+        tween.Completed:Wait()
+        DecompilePanel.Visible = false
+    end)
+    
+    CopyButton.MouseButton1Click:Connect(function()
+        if CurrentDecompiledScript ~= "" then
+            pcall(function()
+                setclipboard(CurrentDecompiledScript)
+            end)
+            
+            CopyButton.Text = "✅"
+            task.delay(1, function()
+                if CopyButton then CopyButton.Text = "📋" end
+            end)
+        end
+    end)
+    
+    RefreshButton.MouseButton1Click:Connect(function()
+        RefreshList()
+    end)
+    
+    SearchInput:GetPropertyChangedSignal("Text"):Connect(function()
+        RefreshList()
+    end)
+    
+    RefreshList()
+end
+
+CreateGUI()
